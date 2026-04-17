@@ -82,29 +82,6 @@ MergeLogic verwendet eine zusammenführungsbasierte Aktualisierungsstrategie. Zi
 - Die resultierende Ressource behält eine **stabile und deterministische ID**
 
 
-## Sequenzdiagramm
-
-```mermaid
-sequenceDiagram
-    participant Input
-    participant System
-    participant HAPI
-
-    Input->>System: Eingehende Werte (SVNR, Feld, Wert)
-    System->>HAPI: GET Patient by SVNr
-    HAPI-->>System: Patient
-    System->>HAPI: GET neueste QuestionnaireResponse
-    HAPI-->>System: QR oder leeres Ergebnis
-
-    alt QR existiert
-        System->>System: Eingehende Felder in bestehende QR zusammenführen
-    else Keine QR vorhanden
-        System->>System: Neue QR erstellen
-    end
-
-    System->>HAPI: PUT QuestionnaireResponse/<questionnaire-id>-<SVNR>
-    HAPI-->>System: 200 OK / 201 Created
----
 
 ## Modul 2 – StoreLogic
 
@@ -137,32 +114,6 @@ Das Skript baut die `QuestionnaireResponse` intern auf.
 6. DEK-Feld an `basic-group` anhängen
 7. Neue QR mit zeitstempelbasierter ID speichern: `<kapitel>-qr-<timestamp>`
 
-### Sequenzdiagramm
-
-```mermaid
-sequenceDiagram
-    participant Input
-    participant System
-    participant FormsLab
-    participant HAPI
-
-    Input->>System: Eingehende Werte (SVNr, Feld, Wert)
-    System->>HAPI: GET Patient by SVNr
-    HAPI-->>System: Patient
-    System->>HAPI: GET neueste QuestionnaireResponse
-    HAPI-->>System: QR oder leer
-
-    alt QR existiert
-        System->>FormsLab: POST Questionnaire/$populate
-        FormsLab-->>System: Vorausgefüllte QR
-    else Keine QR vorhanden
-        System->>System: Neue QR erstellen
-    end
-
-    System->>System: DEK-Feld zu basic-group hinzufügen
-    System->>HAPI: PUT QuestionnaireResponse/<kapitel>-qr-<timestamp>
-    HAPI-->>System: 200 OK / 201 Created
-```
 
 ---
 
