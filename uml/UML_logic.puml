@@ -1,0 +1,83 @@
+@startuml
+autonumber
+
+title FHIR Store-Logik mit $populate
+
+actor "Eingehendes System / Benutzer" as Input
+participant "Backend-System" as System
+database "HAPI FHIR Server" as HAPI
+participant "forms-lab" as FL
+
+== Eingang ==
+
+Input -> System: process_input(SVNR, Kapitel, DEK-Feld, Wert)
+
+== 1. Kapitel -> Questionnaire ==
+
+System -> System: Kapitelname auf Questionnaire-ID mappen
+System -> System: Questionnaire-URL für HAPI bestimmen
+
+== 2. Patient suchen ==
+
+System -> HAPI: GET Patient?identifier=SVNR
+HAPI --> System: Patient/{id} oder leer
+
+alt Patient gefunden
+
+    == 3. Letzte QR suchen ==
+
+    System -> HAPI: GET QuestionnaireResponse\n?subject=Patient/{id}\n&questionnaire={Questionnaire-URL}\n&_sort=-authored&_count=1
+    HAPI --> System: letzte QR oder leer
+
+    alt QR vorhanden
+
+        == 4A. Vorbefüllung ==
+
+        System -> FL: POST Questionnaire/{id}/$populate\ncontext.previousResponse = letzte QR
+        FL --> System: vorausgefüllte QuestionnaireResponse
+
+        System -> System: neue QR vorbereiten
+        System -> System: resourceType setzen
+        System -> System: questionnaire setzen
+        System -> System: status = completed
+        System -> System: subject = Patient/{id}
+        System -> System: identifier setzen
+        System -> System: authored aktualisieren
+        System -> System: alte id entfernen
+
+    else keine QR vorhanden
+
+        == 4B. Neue QR erzeugen ==
+
+        System -> System: leere QuestionnaireResponse erstellen
+        System -> System: questionnaire setzen
+        System -> System: status = completed
+        System -> System: subject = Patient/{id}
+        System -> System: identifier setzen
+        System -> System: authored setzen
+        System -> System: basic-group anlegen
+
+    end
+
+    == 5. Neues Feld ergänzen ==
+
+    System -> System: basic-group sicherstellen
+    System -> System: Antwort für linkId setzen oder ergänzen
+
+    == 6. Speichern ==
+
+    System -> System: neue QR-ID aus Kapitel + Timestamp erzeugen
+    System -> HAPI: PUT QuestionnaireResponse/{new_qr_id}
+    HAPI --> System: 200/201 Created
+
+    == Ergebnis ==
+
+    System --> Input: OK / neue QuestionnaireResponse gespeichert
+
+else kein Patient gefunden
+
+    System --> Input: Fehler / Patient nicht gefunden
+
+end
+
+@enduml

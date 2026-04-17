@@ -1,0 +1,65 @@
+@startuml
+autonumber
+
+title FHIR SDC Verlaufserfassung mit HAPI + $populate
+
+actor Arzt
+participant "Arzt-System / Flask App" as System
+participant "HAPI FHIR Server" as HAPI
+participant "forms-lab" as FL
+
+== Initiale Bereitstellung ==
+
+System -> FL: PUT Questionnaire/schwangerschaft-followup
+FL --> System: 201 Created
+
+System -> HAPI: PUT Questionnaire/schwangerschaft-followup
+HAPI --> System: 201 Created
+
+== Erster Besuch ==
+
+Arzt -> System: Öffnet Formular
+System --> Arzt: Leeres Formular
+
+Arzt -> System: Gibt SVNR und Formulardaten ein
+System -> HAPI: GET Patient?identifier=SVNR|1234567890
+HAPI --> System: Patient/test-patient-1
+
+System -> HAPI: PUT QuestionnaireResponse/v1
+HAPI --> System: 201 Created
+
+== Folgebesuch ==
+
+Arzt -> System: Öffnet Formular erneut
+System -> HAPI: GET Patient?identifier=SVNR|1234567890
+HAPI --> System: Patient/test-patient-1
+
+System -> HAPI: Suche letzte QuestionnaireResponse\nsubject=Patient/test-patient-1\nquestionnaire=schwangerschaft-followup
+HAPI --> System: QuestionnaireResponse/v1
+
+System -> FL: POST Questionnaire/schwangerschaft-followup/$populate\ncontext.previousResponse = v1
+FL --> System: Vorausgefüllte QuestionnaireResponse
+
+System --> Arzt: Formular mit übernommenen Werten
+
+Arzt -> System: Ändert / ergänzt Angaben
+System -> HAPI: PUT QuestionnaireResponse/v2
+HAPI --> System: 201 Created
+
+== Weitere Besuche ==
+
+loop Für jeden weiteren Folgebesuch
+  Arzt -> System: Öffnet Formular
+  System -> HAPI: GET Patient per SVNR
+  HAPI --> System: Patient
+  System -> HAPI: Suche letzte QuestionnaireResponse
+  HAPI --> System: Letzte Version (v2, v3, ...)
+  System -> FL: POST $populate mit previousResponse
+  FL --> System: Vorausgefüllte QuestionnaireResponse
+  System --> Arzt: Formular mit übernommenen Werten
+  Arzt -> System: Passt Werte an
+  System -> HAPI: PUT neue QuestionnaireResponse
+  HAPI --> System: 201 Created
+end
+
+@enduml
