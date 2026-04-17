@@ -81,7 +81,6 @@ MergeLogic verwendet eine zusammenführungsbasierte Aktualisierungsstrategie. Zi
 - Die Zusammenführung erfolgt innerhalb des `basic-group`-Containers
 - Die resultierende Ressource behält eine **stabile und deterministische ID**
 
-### Sequenzdiagramm
 
 ## Sequenzdiagramm
 
@@ -105,7 +104,6 @@ sequenceDiagram
 
     System->>HAPI: PUT QuestionnaireResponse/<questionnaire-id>-<SVNR>
     HAPI-->>System: 200 OK / 201 Created
-
 ---
 
 ## Modul 2 – StoreLogic
