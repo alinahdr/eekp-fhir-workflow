@@ -52,8 +52,6 @@ Das Repository folgt klaren Namenskonventionen für FHIR-Ressourcen:
 | `QuestionnaireResponse` – MergeLogic | `<questionnaire-id>-<SVNR>` | `kapitel-schwangerschaft-1234567890` |
 | `QuestionnaireResponse` – StoreLogic | `<kapitel>-qr-<timestamp>` | `schwangerschaft-qr-20260417143012` |
 
-Das bedeutet: **MergeLogic** schreibt immer in dieselbe Ressource für einen Patienten und ein Kapitel, während **StoreLogic** bei jeder Ausführung eine neue Ressource anlegt.
-
 ---
 
 ## Modul 1 – MergeLogic
@@ -83,7 +81,6 @@ MergeLogic verwendet eine zusammenführungsbasierte Aktualisierungsstrategie. Zi
 
 ### Sequenzdiagramm
 
-## Sequenzdiagramm
 
 ```mermaid
 sequenceDiagram
@@ -106,7 +103,7 @@ sequenceDiagram
     System->>HAPI: PUT QuestionnaireResponse/<questionnaire-id>-<SVNR>
     HAPI-->>System: 200 OK / 201 Created
 
----
+```
 
 ## Modul 2 – StoreLogic
 
@@ -219,6 +216,6 @@ python cleanUp.py
 
 ---
 
-## Haftungsausschluss
+## Hinweis
 
 Alle in diesem Repository verwendeten Patientendaten, Identifikatoren und klinischen Werte sind synthetische Demodaten, die ausschließlich für Entwicklungs- und Testzwecke erstellt wurden. Diese Implementierung ist nicht für den Produktiveinsatz oder den klinischen Betrieb validiert.
