@@ -81,63 +81,45 @@ MergeLogic verwendet eine zusammenführungsbasierte Aktualisierungsstrategie. Zi
 - Die Zusammenführung erfolgt innerhalb des `basic-group`-Containers
 - Die resultierende Ressource behält eine **stabile und deterministische ID**
 
-### Sequenzdiagramm
-
-## Sequenzdiagramm
-
-```mermaid
-sequenceDiagram
-    participant Input
-    participant System
-    participant HAPI
-
-    Input->>System: Eingehende Werte (SVNR, Feld, Wert)
-    System->>HAPI: GET Patient by SVNr
-    HAPI-->>System: Patient
-    System->>HAPI: GET neueste QuestionnaireResponse
-    HAPI-->>System: QR oder leeres Ergebnis
-
-    alt QR existiert
-        System->>System: Eingehende Felder in bestehende QR zusammenführen
-    else Keine QR vorhanden
-        System->>System: Neue QR erstellen
-    end
-
-    System->>HAPI: PUT QuestionnaireResponse/<questionnaire-id>-<SVNR>
-    HAPI-->>System: 200 OK / 201 Created
-
 ---
-
 ## Modul 2 – StoreLogic
 
 **Datei:** `_StoreLogicTest.py`
 
-### Strategie: Event Sourcing
+### Strategie: Update mit Versionierung + $populate
 
-StoreLogic folgt einer Append-only-Strategie. Anstatt eine bestehende `QuestionnaireResponse` zu überschreiben, wird bei jeder Ausführung eine neue Ressource angelegt. Damit wird eine vollständige Historie der Fragebogenänderungen bewahrt.
+StoreLogic verwendet eine aktualisierungsbasierte Strategie mit einer festen `QuestionnaireResponse`-ID.  
+Anstatt bei jeder Ausführung eine neue Ressource zu erzeugen, wird dieselbe `QuestionnaireResponse` unter derselben ID aktualisiert.
 
-Dieser Ansatz eignet sich, wenn eine Längsschnitterfassung oder Nachvollziehbarkeit erforderlich ist.
+Die Historie der Änderungen wird dabei automatisch durch den HAPI FHIR Server über die technische Versionierung (`_history`) gespeichert.
 
-### Wichtiger Hinweis zur Eingabe
+Zusätzlich wird `$populate` verwendet, um bestehende Antworten vor dem Update automatisch zu übernehmen.
 
-Obwohl das Modul mit fragebogenbezogenen Eingaben arbeitet, erhält es von außen **kein** vollständiges `QuestionnaireResponse`-Objekt. Stattdessen empfängt es strukturierte Parameter:
-
-- `SVNr`
-- `Kapitel`
-- `DEK-Feld`
-- `Wert`
-
-Das Skript baut die `QuestionnaireResponse` intern auf.
+---
 
 ### Verarbeitungsschritte
 
-1. `Questionnaire`-Referenz aus dem Kapitelnamen auflösen
-2. `Patient` anhand der `SVNr` suchen
-3. Neueste `QuestionnaireResponse` abrufen
-4. Falls QR existiert → `$populate` auf Forms-Lab aufrufen
-5. Falls keine QR existiert → leere QR erstellen
-6. DEK-Feld an `basic-group` anhängen
-7. Neue QR mit zeitstempelbasierter ID speichern: `<kapitel>-qr-<timestamp>`
+1. `Questionnaire`-Referenz aus dem Kapitelnamen auflösen  
+2. `Patient` anhand der `SVNr` suchen  
+3. Bestehende `QuestionnaireResponse` über feste ID abrufen:  
+   `<kapitel>-<SVNR>`  
+4. Falls eine Response existiert → `$populate` auf Forms-Lab aufrufen  
+5. Falls keine Response existiert → neue leere QR erstellen  
+6. `basic-group` sicherstellen  
+7. DEK-Feld setzen oder aktualisieren  
+8. QR via `PUT QuestionnaireResponse/<kapitel>-<SVNR>` speichern  
+
+---
+
+### Verhalten
+
+- Vorhandene Werte bleiben erhalten (durch `$populate`)  
+- Geänderte Felder werden überschrieben  
+- Neue Felder werden ergänzt  
+- Die ID bleibt konstant  
+- Änderungen werden als Versionen in `_history` gespeichert  
+
+---
 
 ### Sequenzdiagramm
 
@@ -148,10 +130,10 @@ sequenceDiagram
     participant FormsLab
     participant HAPI
 
-    Input->>System: Eingehende Werte (SVNr, Feld, Wert)
+    Input->>System: Eingehende Werte (SVNR, Feld, Wert)
     System->>HAPI: GET Patient by SVNr
     HAPI-->>System: Patient
-    System->>HAPI: GET neueste QuestionnaireResponse
+    System->>HAPI: GET QuestionnaireResponse (fixe ID)
     HAPI-->>System: QR oder leer
 
     alt QR existiert
@@ -161,9 +143,12 @@ sequenceDiagram
         System->>System: Neue QR erstellen
     end
 
-    System->>System: DEK-Feld zu basic-group hinzufügen
-    System->>HAPI: PUT QuestionnaireResponse/<kapitel>-qr-<timestamp>
-    HAPI-->>System: 200 OK / 201 Created
+    System->>System: Feld in basic-group setzen/aktualisieren
+    System->>HAPI: PUT QuestionnaireResponse/<kapitel>-<SVNR>
+    HAPI-->>System: 200 OK
+
+    System->>HAPI: GET _history
+    HAPI-->>System: Versionen der Resource
 ```
 
 ---
