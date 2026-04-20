@@ -1,5 +1,5 @@
 import requests
-from _StoreLogicTest import process_input
+from scripts.store_logic import process_input
 
 HAPI_BASE_URL = "http://localhost:8080/fhir"
 

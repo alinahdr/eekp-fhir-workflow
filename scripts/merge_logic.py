@@ -12,29 +12,39 @@ HEADERS = {
 
 SVNR_SYSTEM = "urn:oid:1.2.40.0.10.1.4.3.1"
 
+# The Questionnaire ID is the same as the chapter name.
 CHAPTER_TO_QUESTIONNAIRE = {
-    "schwangerschaft": "kapitel-schwangerschaft",
-    "labor": "kapitel-labor",
-    "aufnahme": "kapitel-aufnahme"
+    "schwangerschaft": "schwangerschaft",
+    "labor": "labor",
+    "aufnahme": "aufnahme"
 }
 
 
 def print_line(title: str) -> None:
+    """Print a visible section header in the console output."""
     print("\n" + "=" * 72)
     print(title)
     print("=" * 72)
 
 
 def now_iso() -> str:
+    """Return the current UTC timestamp in ISO format."""
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
 def pretty_print(data: dict) -> None:
+    """Print JSON data in a readable format."""
     print(json.dumps(data, indent=2, ensure_ascii=False))
 
 
 def get_questionnaire_info(chapter_name: str) -> dict:
-    questionnaire_id = CHAPTER_TO_QUESTIONNAIRE.get(chapter_name.lower())
+    """
+    Resolve the Questionnaire configuration for the given chapter name.
+    The Questionnaire ID is expected to match the chapter name.
+    """
+    chapter_name = chapter_name.lower()
+    questionnaire_id = CHAPTER_TO_QUESTIONNAIRE.get(chapter_name)
+
     if not questionnaire_id:
         raise ValueError(f"Unknown chapter: {chapter_name}")
 
@@ -44,12 +54,27 @@ def get_questionnaire_info(chapter_name: str) -> dict:
     }
 
 
-def build_qr_id(questionnaire_url_hapi: str, svnr: str) -> str:
-    kapitelname = questionnaire_url_hapi.rstrip("/").split("/")[-1]
-    return f"{kapitelname}-{svnr}"
+def build_qr_id(chapter_name: str, svnr: str) -> str:
+    """
+    Build the fixed QuestionnaireResponse ID.
+
+    Format:
+    <chapter-name>-<SVNR>
+
+    Example:
+    schwangerschaft-1234567890
+    """
+    return f"{chapter_name.lower()}-{svnr}"
 
 
 def build_incoming_qr(svnr: str, chapter_name: str, field_name: str, answer_dict: dict) -> dict:
+    """
+    Build a minimal incoming QuestionnaireResponse from raw input values.
+
+    This function is used to convert simple input parameters
+    (chapter, field, answer, patient identifier) into a FHIR-like structure
+    that can then be merged with an existing QuestionnaireResponse.
+    """
     questionnaire_info = get_questionnaire_info(chapter_name)
 
     return {
@@ -75,20 +100,11 @@ def build_incoming_qr(svnr: str, chapter_name: str, field_name: str, answer_dict
     }
 
 
-def extract_svnr(incoming_qr: dict) -> str | None:
-    identifiers = incoming_qr.get("identifier", [])
-
-    if isinstance(identifiers, dict):
-        identifiers = [identifiers]
-
-    for identifier in identifiers:
-        if identifier.get("system") == SVNR_SYSTEM:
-            return identifier.get("value")
-
-    return None
-
-
 def search_patient_by_svnr(svnr: str) -> dict | None:
+    """
+    Search the HAPI server for a Patient by SVNR.
+    Return the Patient resource if found, otherwise None.
+    """
     response = requests.get(
         f"{HAPI_BASE_URL}/Patient",
         params={"identifier": f"{SVNR_SYSTEM}|{svnr}"},
@@ -107,31 +123,38 @@ def search_patient_by_svnr(svnr: str) -> dict | None:
     return entries[0]["resource"] if entries else None
 
 
-def search_latest_qr(patient_id: str, questionnaire_url_hapi: str) -> dict | None:
+def get_existing_qr(qr_id: str) -> dict | None:
+    """
+    Read an existing QuestionnaireResponse directly by its fixed ID.
+
+    This supports the design decision that there is exactly one
+    QuestionnaireResponse per patient and chapter.
+    """
     response = requests.get(
-        f"{HAPI_BASE_URL}/QuestionnaireResponse",
-        params={
-            "subject": f"Patient/{patient_id}",
-            "questionnaire": questionnaire_url_hapi,
-            "_sort": "-_lastUpdated",
-            "_count": 1
-        },
+        f"{HAPI_BASE_URL}/QuestionnaireResponse/{qr_id}",
         headers=HEADERS,
         timeout=30
     )
 
-    print(f"[{response.status_code}] GET latest QuestionnaireResponse")
-    print(f"Search URL: {response.url}")
+    print(f"[{response.status_code}] GET QuestionnaireResponse/{qr_id}")
+
+    if response.status_code == 404:
+        return None
 
     if response.status_code != 200:
         print(response.text)
         return None
 
-    entries = response.json().get("entry", [])
-    return entries[0]["resource"] if entries else None
+    return response.json()
 
 
 def ensure_basic_group(qr: dict) -> dict:
+    """
+    Ensure that the QuestionnaireResponse contains a 'basic-group'.
+
+    If the group does not exist, it is created.
+    The function returns the group object so it can be updated directly.
+    """
     if "item" not in qr or not qr["item"]:
         qr["item"] = [{"linkId": "basic-group", "item": []}]
         return qr["item"][0]
@@ -147,6 +170,14 @@ def ensure_basic_group(qr: dict) -> dict:
 
 
 def merge_questionnaire_responses(existing_qr: dict, incoming_qr: dict) -> dict:
+    """
+    Merge the incoming QuestionnaireResponse into the existing one.
+
+    Rules:
+    - If a field already exists, its answer is overwritten.
+    - If a field does not exist, it is added.
+    - Only items inside 'basic-group' are processed here.
+    """
     merged_qr = copy.deepcopy(existing_qr)
 
     existing_group = ensure_basic_group(merged_qr)
@@ -173,7 +204,24 @@ def merge_questionnaire_responses(existing_qr: dict, incoming_qr: dict) -> dict:
     return merged_qr
 
 
-def prepare_qr_for_save(qr: dict, patient_ref: str, svnr: str, questionnaire_url_hapi: str, qr_id: str) -> dict:
+def prepare_qr_for_save(
+    qr: dict,
+    patient_ref: str,
+    svnr: str,
+    questionnaire_url_hapi: str,
+    qr_id: str
+) -> dict:
+    """
+    Prepare the final QuestionnaireResponse before saving it to HAPI.
+
+    This function normalizes the resource and sets the required fields:
+    - id
+    - questionnaire reference
+    - subject
+    - status
+    - identifier
+    - authored
+    """
     new_qr = copy.deepcopy(qr)
 
     new_qr["resourceType"] = "QuestionnaireResponse"
@@ -181,16 +229,17 @@ def prepare_qr_for_save(qr: dict, patient_ref: str, svnr: str, questionnaire_url
     new_qr["questionnaire"] = questionnaire_url_hapi
     new_qr["status"] = "completed"
     new_qr["subject"] = {"reference": patient_ref}
-
-    # R4: QuestionnaireResponse.identifier = object, not array
-    new_qr["identifier"] = {
-        "system": SVNR_SYSTEM,
-        "value": svnr
-    }
-
+    new_qr["identifier"] = [
+        {
+            "system": SVNR_SYSTEM,
+            "value": svnr
+        }
+    ]
     new_qr["authored"] = now_iso()
+
     ensure_basic_group(new_qr)
 
+    # Remove server-managed metadata before saving.
     if "meta" in new_qr:
         del new_qr["meta"]
 
@@ -198,6 +247,12 @@ def prepare_qr_for_save(qr: dict, patient_ref: str, svnr: str, questionnaire_url
 
 
 def save_qr(qr: dict, qr_id: str) -> str | None:
+    """
+    Save the QuestionnaireResponse to HAPI using PUT on the fixed ID.
+
+    Repeated saves to the same ID update the same logical resource.
+    HAPI stores technical versions in the background.
+    """
     response = requests.put(
         f"{HAPI_BASE_URL}/QuestionnaireResponse/{qr_id}",
         headers=HEADERS,
@@ -214,23 +269,33 @@ def save_qr(qr: dict, qr_id: str) -> str | None:
     return f"{HAPI_BASE_URL}/QuestionnaireResponse/{qr_id}?_format=json"
 
 
-def process(incoming_qr: dict, label: str) -> str | None:
-    print_line(f"TEST CASE: {label}")
-    print("Incoming QR:")
-    pretty_print(incoming_qr)
+def process_input(
+    svnr: str,
+    chapter_name: str,
+    field_name: str,
+    answer_dict: dict
+) -> str | None:
+    """
+    Process one input value for one patient and one chapter.
 
-    svnr = extract_svnr(incoming_qr)
-    questionnaire_url_hapi = incoming_qr.get("questionnaire")
+    Workflow:
+    1. Resolve the Questionnaire from the chapter name
+    2. Search the patient by SVNR
+    3. Build the fixed QuestionnaireResponse ID
+    4. Read the existing QuestionnaireResponse by ID
+    5. If it exists, merge the new field into it
+    6. If it does not exist, create a new QuestionnaireResponse
+    7. Normalize the final resource
+    8. Save it back to HAPI with PUT
+    """
+    print_line("1. Resolve chapter to Questionnaire")
+    questionnaire_info = get_questionnaire_info(chapter_name)
+    questionnaire_url_hapi = questionnaire_info["url_hapi"]
 
-    if not svnr:
-        print("No SVNR found in incoming QR.")
-        return None
+    print(f"Chapter: {chapter_name}")
+    print(f"Questionnaire: {questionnaire_url_hapi}")
 
-    if not questionnaire_url_hapi:
-        print("No questionnaire reference found in incoming QR.")
-        return None
-
-    print_line("1. Search patient by SVNR")
+    print_line("2. Search patient by SVNR")
     patient = search_patient_by_svnr(svnr)
     if not patient:
         print("No patient found.")
@@ -239,13 +304,19 @@ def process(incoming_qr: dict, label: str) -> str | None:
     patient_ref = f"Patient/{patient['id']}"
     print(f"Patient found: {patient_ref}")
 
-    print_line("2. Search latest QR for patient + questionnaire")
-    existing_qr = search_latest_qr(patient["id"], questionnaire_url_hapi)
+    print_line("3. Build fixed QuestionnaireResponse ID")
+    qr_id = build_qr_id(chapter_name, svnr)
+    print(f"QuestionnaireResponse ID: {qr_id}")
 
-    qr_id = build_qr_id(questionnaire_url_hapi, svnr)
+    print_line("4. Build incoming QuestionnaireResponse")
+    incoming_qr = build_incoming_qr(svnr, chapter_name, field_name, answer_dict)
+    pretty_print(incoming_qr)
+
+    print_line("5. Read existing QuestionnaireResponse")
+    existing_qr = get_existing_qr(qr_id)
 
     if existing_qr:
-        print("Existing QR found. Merge incoming QR into the existing QR.")
+        print("Existing QuestionnaireResponse found. Start merge.")
         merged_qr = merge_questionnaire_responses(existing_qr, incoming_qr)
         final_qr = prepare_qr_for_save(
             qr=merged_qr,
@@ -255,7 +326,7 @@ def process(incoming_qr: dict, label: str) -> str | None:
             qr_id=qr_id
         )
     else:
-        print("No existing QR found. Create a new QR.")
+        print("No existing QuestionnaireResponse found. Create a new one.")
         final_qr = prepare_qr_for_save(
             qr=incoming_qr,
             patient_ref=patient_ref,
@@ -264,10 +335,10 @@ def process(incoming_qr: dict, label: str) -> str | None:
             qr_id=qr_id
         )
 
-    print_line("3. Final QR")
+    print_line("6. Final QuestionnaireResponse")
     pretty_print(final_qr)
 
-    print_line("4. Save QuestionnaireResponse")
+    print_line("7. Save QuestionnaireResponse")
     link = save_qr(final_qr, qr_id)
 
     if link:
@@ -277,42 +348,35 @@ def process(incoming_qr: dict, label: str) -> str | None:
 
 
 if __name__ == "__main__":
-    print_line("MERGE WORKFLOW TEST START")
 
-    incoming_qr_existing = build_incoming_qr(
+    print("\n=== TEST 1: Erstes Feld setzen (SSW) ===")
+    process_input(
+        svnr="1234567890",
+        chapter_name="schwangerschaft",
+        field_name="ssw",
+        answer_dict={"valueInteger": 32}
+    )
+
+    print("\n=== TEST 2: Zweites Feld hinzufügen (Gewicht) ===")
+    process_input(
         svnr="1234567890",
         chapter_name="schwangerschaft",
         field_name="gewicht",
         answer_dict={"valueDecimal": 68.5}
     )
-    link_existing = process(
-        incoming_qr=incoming_qr_existing,
-        label="schwangerschaft-update"
+
+    print("\n=== TEST 3: Drittes Feld hinzufügen (Entbindungstermin) ===")
+    process_input(
+        svnr="1234567890",
+        chapter_name="schwangerschaft",
+        field_name="entbindungstermin",
+        answer_dict={"valueDate": "2026-07-15"}
     )
 
-    incoming_qr_overwrite = build_incoming_qr(
+    print("\n=== TEST 4: Feld überschreiben (Gewicht ändern) ===")
+    process_input(
         svnr="1234567890",
         chapter_name="schwangerschaft",
         field_name="gewicht",
         answer_dict={"valueDecimal": 70.2}
     )
-    link_overwrite = process(
-        incoming_qr=incoming_qr_overwrite,
-        label="schwangerschaft-overwrite"
-    )
-
-    incoming_qr_new = build_incoming_qr(
-        svnr="1234567890",
-        chapter_name="labor",
-        field_name="hb",
-        answer_dict={"valueDecimal": 12.4}
-    )
-    link_new = process(
-        incoming_qr=incoming_qr_new,
-        label="labor-neu"
-    )
-
-    print_line("SUMMARY")
-    print(f"Pregnancy QR:           {link_existing}")
-    print(f"Pregnancy QR overwrite: {link_overwrite}")
-    print(f"Labor QR:               {link_new}")

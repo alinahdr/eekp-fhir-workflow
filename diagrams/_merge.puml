@@ -7,78 +7,44 @@ actor "Eingehendes System" as Input
 participant "Backend-System" as System
 database "HAPI FHIR Server" as HAPI
 
-== Eingang ==
-
-Input -> System: POST QuestionnaireResponse\n(mit SVNR-Identifier und Questionnaire-Referenz)
-
-== 1. SVNR + Questionnaire aus Eingang lesen ==
-
-System -> System: SVNR aus identifier extrahieren
-System -> System: Questionnaire-URL aus incoming QR lesen
-
-== 2. Patient suchen ==
+Input -> System: Eingabewert\n(SVNR, Kapitel, Feld, Antwort)
 
 System -> HAPI: GET Patient?identifier=SVNR
-HAPI --> System: Patient/{id} oder leer
+HAPI --> System: Patient oder leer
 
 alt Patient gefunden
 
-    == 3. Letzte passende QR suchen ==
+    System -> System: QR-ID aus Kapitel + SVNR erzeugen
 
-    System -> HAPI: GET QuestionnaireResponse\n?subject=Patient/{id}\n&questionnaire={Questionnaire-URL}\n&_sort=-_lastUpdated&_count=1
-    HAPI --> System: letzte QR oder leer
+    System -> HAPI: GET QuestionnaireResponse/{qr_id}
+    HAPI --> System: QR oder 404
+
+    note right
+      404 = keine QR vorhanden
+      → neue QR erstellen
+    end note
 
     alt QR vorhanden
-
-        == 4A. Merge ==
-
-        System -> System: bestehende QR tief kopieren
-        System -> System: basic-group sicherstellen
-        System -> System: Felder nach linkId vergleichen
-        System -> System: vorhandene Antworten überschreiben
-        System -> System: neue Felder hinzufügen
-
-        == 5A. QR für Speicherung vorbereiten ==
-
-        System -> System: QR-ID aus Questionnaire-ID + SVNR erzeugen
-        System -> System: status = completed setzen
-        System -> System: subject = Patient/{id} setzen
-        System -> System: identifier setzen
-        System -> System: authored aktualisieren
-        System -> System: meta entfernen
-
-        == 6A. Speichern ==
-
-        System -> HAPI: PUT QuestionnaireResponse/{qr_id}
-        HAPI --> System: 200/201
-
+        System -> System: Neue Daten mergen
     else keine QR vorhanden
-
-        == 4B. Neue QR vorbereiten ==
-
-        System -> System: incoming QR als Basis verwenden
-        System -> System: QR-ID aus Questionnaire-ID + SVNR erzeugen
-        System -> System: status = completed setzen
-        System -> System: subject = Patient/{id} setzen
-        System -> System: identifier setzen
-        System -> System: authored setzen
-        System -> System: basic-group sicherstellen
-        System -> System: meta entfernen
-
-        == 5B. Speichern ==
-
-        System -> HAPI: PUT QuestionnaireResponse/{qr_id}
-        HAPI --> System: 200/201
-
+        System -> System: Neue QR erstellen
     end
 
-    == Ergebnis ==
+    System -> System: QR vorbereiten
 
-    System --> Input: OK / QuestionnaireResponse gespeichert
+    System -> HAPI: PUT QuestionnaireResponse/{qr_id}
+    HAPI --> System: 200/201
+
+    note right
+      200 = Update
+      201 = neu erstellt
+    end note
+
+    System --> Input: OK / gespeichert
 
 else kein Patient gefunden
 
-    System --> Input: Fehler / Patient nicht gefunden
+    System --> Input: Fehler
 
 end
 
