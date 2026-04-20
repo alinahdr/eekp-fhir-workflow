@@ -104,40 +104,46 @@ sequenceDiagram
     HAPI-->>System: 200 OK / 201 Created
 
 ```
-
 ## Modul 2 – StoreLogic
 
 **Datei:** `_StoreLogicTest.py`
 
-### Strategie: Event Sourcing
+### Strategie: Update mit Versionierung + $populate
 
-StoreLogic folgt einer Append-only-Strategie. Anstatt eine bestehende `QuestionnaireResponse` zu überschreiben, wird bei jeder Ausführung eine neue Ressource angelegt. Damit wird eine vollständige Historie der Fragebogenänderungen bewahrt.
+StoreLogic verwendet eine aktualisierungsbasierte Strategie mit einer festen `QuestionnaireResponse`-ID.  
+Anstatt bei jeder Ausführung eine neue Ressource zu erzeugen, wird dieselbe `QuestionnaireResponse` unter derselben ID aktualisiert.
 
-Dieser Ansatz eignet sich, wenn eine Längsschnitterfassung oder Nachvollziehbarkeit erforderlich ist.
+Die Historie der Änderungen wird dabei automatisch durch den HAPI FHIR Server über die technische Versionierung (`_history`) gespeichert.
 
-### Wichtiger Hinweis zur Eingabe
+Zusätzlich wird `$populate` verwendet, um bestehende Antworten vor dem Update automatisch zu übernehmen.
 
-Obwohl das Modul mit fragebogenbezogenen Eingaben arbeitet, erhält es von außen **kein** vollständiges `QuestionnaireResponse`-Objekt. Stattdessen empfängt es strukturierte Parameter:
-
-- `SVNr`
-- `Kapitel`
-- `DEK-Feld`
-- `Wert`
-
-Das Skript baut die `QuestionnaireResponse` intern auf.
+---
 
 ### Verarbeitungsschritte
 
-1. `Questionnaire`-Referenz aus dem Kapitelnamen auflösen
-2. `Patient` anhand der `SVNr` suchen
-3. Neueste `QuestionnaireResponse` abrufen
-4. Falls QR existiert → `$populate` auf Forms-Lab aufrufen
-5. Falls keine QR existiert → leere QR erstellen
-6. DEK-Feld an `basic-group` anhängen
-7. Neue QR mit zeitstempelbasierter ID speichern: `<kapitel>-qr-<timestamp>`
+1. `Questionnaire`-Referenz aus dem Kapitelnamen auflösen  
+2. `Patient` anhand der `SVNr` suchen  
+3. Bestehende `QuestionnaireResponse` über feste ID abrufen:  
+   `<kapitel>-<SVNR>`  
+4. Falls eine Response existiert → `$populate` auf Forms-Lab aufrufen  
+5. Falls keine Response existiert → neue leere QR erstellen  
+6. `basic-group` sicherstellen  
+7. DEK-Feld setzen oder aktualisieren  
+8. QR via `PUT QuestionnaireResponse/<kapitel>-<SVNR>` speichern  
+
+---
+
+### Verhalten
+
+- Vorhandene Werte bleiben erhalten (durch `$populate`)  
+- Geänderte Felder werden überschrieben  
+- Neue Felder werden ergänzt  
+- Die ID bleibt konstant  
+- Änderungen werden als Versionen in `_history` gespeichert  
+
+---
 
 ### Sequenzdiagramm
-
 ```mermaid
 sequenceDiagram
     participant Input
@@ -145,76 +151,30 @@ sequenceDiagram
     participant FormsLab
     participant HAPI
 
-    Input->>System: Eingehende Werte (SVNr, Feld, Wert)
-    System->>HAPI: GET Patient by SVNr
-    HAPI-->>System: Patient
-    System->>HAPI: GET neueste QuestionnaireResponse
-    HAPI-->>System: QR oder leer
+    Input->>System: Eingehende Werte (SVNR, Feld, Wert)
 
-    alt QR existiert
-        System->>FormsLab: POST Questionnaire/$populate
-        FormsLab-->>System: Vorausgefüllte QR
-    else Keine QR vorhanden
+    System->>HAPI: GET Patient?identifier=SVNR
+    HAPI-->>System: Patient
+
+    System->>HAPI: GET QuestionnaireResponse/<kapitel>-<SVNR>
+    
+    alt QR vorhanden (200)
+        HAPI-->>System: Existing QR
+        System->>FormsLab: POST $populate (previousResponse)
+        FormsLab-->>System: Prefilled QR
+    else Keine QR (404)
+        HAPI-->>System: Not Found
         System->>System: Neue QR erstellen
     end
 
-    System->>System: DEK-Feld zu basic-group hinzufügen
-    System->>HAPI: PUT QuestionnaireResponse/<kapitel>-qr-<timestamp>
-    HAPI-->>System: 200 OK / 201 Created
+    System->>System: Feld in basic-group setzen/aktualisieren
+
+    System->>HAPI: PUT QuestionnaireResponse/<kapitel>-<SVNR>
+    HAPI-->>System: 200 OK (neue Version)
+
+    System->>HAPI: GET _history
+    HAPI-->>System: Versionen
 ```
-
----
-
-## Vergleich: MergeLogic vs. StoreLogic
-
-| Aspekt | MergeLogic | StoreLogic |
-|---|---|---|
-| Strategie | Idempotentes Upsert | Event Sourcing (Append-only) |
-| Ressourcenanzahl | 1 QR pro Patient pro Kapitel | 1 neue QR pro Ausführung |
-| Historie | Keine Versionshistorie | Vollständiger Audit-Trail |
-| ID-Schema | `<questionnaire-id>-<SVNR>` | `<kapitel>-qr-<timestamp>` |
-| Externe Abhängigkeit | Keine | Forms-Lab `$populate` |
-| Wiederholungssicherheit | Sicher (idempotent) | Erzeugt zusätzliche Einträge |
-| Anwendungsfall | Single Source of Truth | Längsschnitterfassung / Auditing |
-
----
-
-## Infrastruktur & Hilfsskripte
-
-**`setup.py`** — Initialisiert den HAPI FHIR Server mit Testdaten: einen Beispiel-`Questionnaire`, einen Demo-`Patient` (Anna Mustermann, SVNr `1234567890`) sowie eine bereits vorhandene `QuestionnaireResponse`.
-
-**`cleanUp.py`** — Löscht alle `QuestionnaireResponse`-Ressourcen vom HAPI FHIR Server. Nach Testläufen verwenden, um einen sauberen Ausgangszustand wiederherzustellen.
-
----
-
-## Systemvoraussetzungen
-
-| Anforderung | Detail |
-|---|---|
-| Python | 3.10 oder neuer |
-| Abhängigkeit | `pip install requests` |
-| FHIR Server | HAPI FHIR läuft lokal via Docker auf Port `8080` |
-| Netzwerk | Internetzugang erforderlich für Forms-Lab (`$populate`) |
-
----
-
-## Deployment & Ausführungsreihenfolge
-
-```bash
-# 1. Testdaten initialisieren
-python _Setup.py
-
-# 2. MergeLogic ausführen (idempotentes Upsert)
-python _MergeLogic.py
-
-# 3. StoreLogic ausführen (Event Sourcing)
-python _StoreLogicTest.py
-
-# 4. QuestionnaireResponse-Ressourcen bereinigen
-python cleanUp.py
-```
-
----
 
 ## Hinweis
 

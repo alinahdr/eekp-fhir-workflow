@@ -1,0 +1,51 @@
+@startuml
+autonumber
+
+title FHIR Workflow mit $populate (vereinfacht)
+
+actor "Benutzer / System" as Input
+participant "Backend-System" as System
+database "HAPI FHIR Server" as HAPI
+participant "forms-lab" as FL
+
+Input -> System: Eingabe (z. B. SSW ändern)
+
+== Patient laden ==
+
+System -> HAPI: Patient über SVNR suchen
+HAPI --> System: Patient/{id}
+
+== Bestehende Daten prüfen ==
+
+System -> HAPI: GET QuestionnaireResponse/{kapitel-svnr}
+HAPI --> System: bestehende Antwort oder leer
+
+alt Antwort vorhanden
+
+    == Vorbefüllung ==
+
+    System -> FL: $populate mit previousResponse
+    FL --> System: vorbefüllte Antwort
+
+    System -> System: bestehende Werte übernehmen
+
+else keine Antwort
+
+    System -> System: neue leere Antwort erstellen
+
+end
+
+== Daten aktualisieren ==
+
+System -> System: Feld (z. B. SSW) setzen oder ändern
+
+== Speichern ==
+
+System -> HAPI: PUT QuestionnaireResponse/{kapitel-svnr}
+HAPI --> System: OK (neue Version gespeichert)
+
+== Ergebnis ==
+
+System --> Input: Antwort erfolgreich gespeichert
+
+@enduml
